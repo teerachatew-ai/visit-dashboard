@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Customer Visit Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="app-shell">
+
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-icon">🏭</span>
+      <div>
+        <div class="brand-title">Visit Dashboard</div>
+        <div class="brand-sub">PNGD / ANGD</div>
+      </div>
+    </div>
+
+    <nav class="nav-list">
+      <button class="nav-btn active" data-tab="customers">
+        <span class="nav-icon">🏢</span><span class="nav-label">Visit Record</span>
+      </button>
+      <button class="nav-btn" data-tab="team">
+        <span class="nav-icon">🧑‍💼</span><span class="nav-label">Team Performance</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="last-updated" id="lastUpdated">กำลังโหลด...</div>
+      <button id="refreshBtn" class="btn-refresh">
+        <span>🔄</span> รีเฟรชข้อมูล
+      </button>
+    </div>
+  </aside>
+
+  <main class="main-area">
+    <div class="loading-overlay" id="loadingIndicator">
+      <div class="loading-box">
+        <div class="spinner"></div>
+        <div>กำลังโหลดข้อมูลล่าสุด...</div>
+      </div>
+    </div>
+
+    <div id="app">
+
+      <!-- TAB: CUSTOMERS (overview + status + search) -->
+      <section class="tab-panel active" id="tab-customers">
+        <div class="page-head">
+          <h1>ข้อมูลลูกค้า</h1>
+          <p class="page-desc">ดูสถานะการเข้าเยี่ยมเทียบเป้าหมาย หรือค้นหาประวัติลูกค้ารายบริษัท</p>
+        </div>
+        <div class="sub-tab-row">
+          <button class="sub-tab-btn active" data-subtab="status">🎯 สถานะเยี่ยม</button>
+          <button class="sub-tab-btn" data-subtab="search">🔍 ค้นหาลูกค้า</button>
+        </div>
+
+        <div class="sub-tab-panel active" id="subtab-status">
+          <div class="legend-row">
+            <span class="legend-item"><span class="dot dot-overdue"></span> เกินกำหนดเข้าเยี่ยม ต้องรีบไปเยี่ยม</span>
+            <span class="legend-item"><span class="dot dot-done"></span> ครบตามเป้าหมายแล้ว</span>
+          </div>
+          <div class="filter-bar">
+            <label class="grow">ค้นหาบริษัท <input type="text" id="tg-search" placeholder="พิมพ์ชื่อบริษัท..."></label>
+            <button id="tg-export" class="btn-secondary">⬇ ดาวน์โหลด CSV</button>
+          </div>
+          <div class="filter-tabs-block">
+            <div class="filter-group">
+              <div class="filter-label">สถานะ</div>
+              <div class="tab-group" id="tg-status-tabs"></div>
+            </div>
+            <div class="filter-group">
+              <div class="filter-label">พื้นที่ (IE)</div>
+              <div class="tab-group" id="tg-ie-tabs"></div>
+            </div>
+            <div class="filter-group">
+              <div class="filter-label">Owner</div>
+              <div class="tab-group" id="tg-sl-tabs"></div>
+            </div>
+          </div>
+          <div class="status-summary" id="tg-summary"></div>
+          <div class="table-wrap">
+            <table id="tg-table">
+              <thead><tr>
+                <th data-sort="company_name">ลูกค้า</th>
+                <th data-sort="ie">พื้นที่</th>
+                <th data-sort="sl_real">Owner ผู้ดูแล</th>
+                <th data-sort="visits_this_year">ความคืบหน้าปีนี้</th>
+                <th data-sort="visits_needed">ยังขาดอีก</th>
+                <th data-sort="last_visit_date">ติดต่อล่าสุด</th>
+                <th data-sort="status">สถานะ</th>
+              </tr></thead>
+              <tbody id="tg-tbody"></tbody>
+            </table>
+          </div>
+          <details class="off-target-block">
+            <summary>ลูกค้านอกแผนเป้าหมาย (มีประวัติเยี่ยมแต่ไม่มีในไฟล์ Target) — <span id="offTargetCount">0</span> ราย</summary>
+            <div class="table-wrap">
+              <table id="off-table">
+                <thead><tr><th>บริษัท</th><th>พื้นที่</th><th>เยี่ยมทั้งหมด</th><th>เยี่ยมปีนี้</th><th>เยี่ยมล่าสุด</th></tr></thead>
+                <tbody id="off-tbody"></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <div class="sub-tab-panel" id="subtab-search">
+          <div class="search-box-wrap">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="search-box" placeholder="พิมพ์ชื่อบริษัทหรือรหัสลูกค้า เช่น Nestle, NG-BPO-...">
+          </div>
+          <div id="search-results" class="search-results"></div>
+          <div id="company-detail" class="company-detail" style="display:none;"></div>
+        </div>
+      </section>
+
+      <!-- TAB: TEAM (owner performance + insights) -->
+      <section class="tab-panel" id="tab-team">
+        <div class="page-head">
+          <h1>ทีมและผลงาน Owner</h1>
+          <p class="page-desc">เลือกชื่อ Owner เพื่อดูสรุปผลงานและรายชื่อลูกค้าในความดูแล พร้อม Insights เชิงลึกของทั้งทีม</p>
+        </div>
+        <div class="owner-tabs" id="sl-owner-tabs"></div>
+        <div class="kpi-row" id="sl-kpis"></div>
+        <div class="card chart-card wide heatmap-card">
+          <h3>Heatmap: เดือน × Owner (จำนวนติดต่อ, ปีปัจจุบัน)</h3>
+          <div id="heatmap"></div>
+        </div>
+        <div class="chart-grid">
+          <div class="card chart-card wide">
+            <h3>แนวโน้มรายเดือนเทียบค่าเฉลี่ยทีม (ปีปัจจุบัน)</h3>
+            <canvas id="chartSLTrend"></canvas>
+          </div>
+          <div class="card chart-card">
+            <h3>สัดส่วนหัวข้อการเยี่ยม (ปีปัจจุบัน)</h3>
+            <canvas id="chartSLTopic"></canvas>
+          </div>
+        </div>
+        <h2 class="section-title">ลูกค้าในความดูแล</h2>
+        <div class="table-wrap">
+          <table id="sl-cust-table">
+            <thead><tr><th>ลูกค้า</th><th>พื้นที่</th><th>ความคืบหน้าปีนี้</th><th>ยังขาดอีก</th><th>ติดต่อล่าสุด</th><th>สถานะ</th></tr></thead>
+            <tbody id="sl-cust-tbody"></tbody>
+          </table>
+        </div>
+        <h2 class="section-title">เปรียบเทียบทั้งทีม</h2>
+        <div class="table-wrap">
+          <table id="sl-leader-table">
+            <thead><tr><th>Owner</th><th>ลูกค้าในความดูแล</th><th>เยี่ยมปีนี้</th><th>ครบเป้าหมายแล้ว</th><th>% ครบเป้าหมาย</th></tr></thead>
+            <tbody id="sl-leader-tbody"></tbody>
+          </table>
+        </div>
+
+        <h2 class="section-title">จัดการรายชื่อทีม Owner</h2>
+        <p class="page-desc">ลบชื่อคนที่ลาออกแล้วออกจากรายชื่อที่เลือกได้ — ประวัติการเยี่ยมเก่าของเขายังอยู่ครบ ไม่หายไปไหน</p>
+        <div class="card staff-manage-card">
+          <div class="staff-group">
+            <div class="staff-group-label">ทีมปัจจุบัน</div>
+            <div class="staff-chip-list" id="staff-active-list"></div>
+          </div>
+          <div class="staff-group">
+            <div class="staff-group-label">ลาออกแล้ว (ซ่อนจากรายการเลือก)</div>
+            <div class="staff-chip-list" id="staff-resigned-list"></div>
+          </div>
+        </div>
+
+        <h2 class="section-title">โอนย้ายลูกค้าให้ Owner ใหม่ (นำเข้าจาก Excel)</h2>
+        <p class="page-desc">เมื่อมีการเปลี่ยนผู้ดูแลลูกค้า: ดาวน์โหลดรายชื่อลูกค้าปัจจุบัน → กรอกคอลัมน์ "Owner ใหม่" เฉพาะรายที่ต้องการเปลี่ยน → นำเข้าไฟล์กลับเข้าระบบ ประวัติการเยี่ยมเก่าจะไม่เปลี่ยนแปลง มีผลแค่ผู้ดูแลปัจจุบันเท่านั้น</p>
+        <div class="card owner-transfer-card">
+          <div class="transfer-row">
+            <a href="/api/owners/export" class="btn-secondary" download>⬇ ดาวน์โหลดรายชื่อลูกค้าปัจจุบัน (Excel)</a>
+          </div>
+          <div class="transfer-row">
+            <input type="file" id="owner-import-file" accept=".xlsx">
+            <button id="owner-import-btn" class="btn-primary">⬆ นำเข้าไฟล์ที่แก้ไขแล้ว</button>
+          </div>
+          <div id="owner-import-result" class="owner-import-result"></div>
+        </div>
+
+        <h2 class="section-title">💡 Insights เชิงลึก <span class="badge-beta">Beta</span></h2>
+        <p class="page-desc">มุมมองเสริมสำหรับวางแผนและติดตามการทำงานของทีม</p>
+        <div class="chart-grid">
+          <div class="card chart-card wide">
+            <h3>📅 คาดการณ์สิ้นปี</h3>
+            <div id="forecastBox" class="forecast-box"></div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="customers"><span class="nav-icon">🏢</span><span class="nav-label">Visit Record</span></button>
+    <button class="nav-btn" data-tab="team"><span class="nav-icon">🧑‍💼</span><span class="nav-label">Team Performance</span></button>
+  </nav>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

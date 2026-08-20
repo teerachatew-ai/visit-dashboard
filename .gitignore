@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/staff_status.json
+data/owner_overrides.json
+server.log
+*.xlsx
+!data/target.xlsx
