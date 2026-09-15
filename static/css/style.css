@@ -144,6 +144,20 @@ body {
   font-weight: 500;
 }
 .btn-secondary:hover { background: var(--surface-2); }
+a.btn-secondary { display: inline-flex; align-items: center; text-decoration: none; }
+
+.report-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.report-export-label { font-size: 0.85rem; font-weight: 600; color: var(--text); margin-right: 4px; }
 
 /* ---------- BOTTOM NAV (mobile) ---------- */
 .bottom-nav { display: none; }

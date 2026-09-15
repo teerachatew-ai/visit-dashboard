@@ -8,8 +8,24 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, send_file
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+)
 
 app = Flask(__name__)
+
+FONT_DIR = os.path.join(os.path.dirname(__file__), "static", "fonts")
+pdfmetrics.registerFont(TTFont("Sarabun", os.path.join(FONT_DIR, "Sarabun-Regular.ttf")))
+pdfmetrics.registerFont(TTFont("Sarabun-Bold", os.path.join(FONT_DIR, "Sarabun-Bold.ttf")))
 
 SHEET_ID = "1Z6C7_4niXWeDJIvhkPzhqioKXNbxppzWSBo64MsaAw4"
 SHEET_XLSX_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
@@ -470,6 +486,152 @@ def api_owners_reset():
         save_owner_overrides(overrides)
     get_dataset(force=True)
     return jsonify({"ok": True})
+
+
+def build_visit_report_groups():
+    """Visit records grouped by each customer's CURRENT owner (not the
+    staff name logged on the visit itself, which drifts as ownership
+    rotates - see the ทีม tab for the same convention)."""
+    data = get_dataset()
+    owner_map = {c["customer_id"]: c["sl_real"] for c in data["customers"]}
+    UNASSIGNED = "ไม่มี Owner (นอกแผนเป้าหมาย)"
+
+    by_owner = {}
+    for v in data["visits"]:
+        owner = owner_map.get(v["customer_id"], UNASSIGNED)
+        by_owner.setdefault(owner, []).append(v)
+
+    owners_sorted = sorted(by_owner.keys(), key=lambda o: (o == UNASSIGNED, o))
+    groups = []
+    for owner in owners_sorted:
+        rows = sorted(by_owner[owner], key=lambda v: v["date"], reverse=True)
+        groups.append((owner, rows))
+    return groups, data["generated_at"]
+
+
+REPORT_COLUMNS = [
+    ("date", "วันที่", 12),
+    ("company_name", "บริษัท", 34),
+    ("ie", "พื้นที่", 10),
+    ("topic", "หัวข้อ", 22),
+    ("details", "รายละเอียด", 34),
+    ("contact", "ผู้ติดต่อ", 16),
+    ("staff", "ผู้บันทึก", 14),
+]
+
+
+@app.route("/api/report/excel")
+def api_report_excel():
+    groups, generated_at = build_visit_report_groups()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "รายงานการเยี่ยมลูกค้า"
+    ws.sheet_properties.outlinePr.summaryBelow = False  # group header stays above its collapsed rows
+
+    header_fill = PatternFill("solid", fgColor="2563EB")
+    header_font = Font(bold=True, color="FFFFFF")
+    group_fill = PatternFill("solid", fgColor="EAF0FE")
+    group_font = Font(bold=True, color="1E3A8A", size=12)
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    for i, (_, label, width) in enumerate(REPORT_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    ws.cell(row=1, column=1, value=f"รายงานการเยี่ยมลูกค้า — อัปเดตล่าสุด {generated_at}").font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(REPORT_COLUMNS))
+    row_num = 3
+
+    for owner, rows in groups:
+        ws.cell(row=row_num, column=1, value=f"Owner: {owner}  ({len(rows)} ครั้ง)")
+        ws.cell(row=row_num, column=1).font = group_font
+        for c in range(1, len(REPORT_COLUMNS) + 1):
+            ws.cell(row=row_num, column=c).fill = group_fill
+        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=len(REPORT_COLUMNS))
+        row_num += 1
+
+        header_row = row_num
+        for c, (_, label, _) in enumerate(REPORT_COLUMNS, start=1):
+            cell = ws.cell(row=header_row, column=c, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+        row_num += 1
+
+        for v in rows:
+            for c, (key, _, _) in enumerate(REPORT_COLUMNS, start=1):
+                cell = ws.cell(row=row_num, column=c, value=v.get(key, ""))
+                cell.alignment = wrap
+            ws.row_dimensions[row_num].outlineLevel = 1
+            row_num += 1
+
+        row_num += 1  # spacer between owner groups
+
+    ws.freeze_panes = "A4"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="visit_report.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/api/report/pdf")
+def api_report_pdf():
+    groups, generated_at = build_visit_report_groups()
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        topMargin=14 * mm, bottomMargin=14 * mm, leftMargin=12 * mm, rightMargin=12 * mm,
+    )
+
+    title_style = ParagraphStyle("Title", fontName="Sarabun-Bold", fontSize=16, spaceAfter=4)
+    meta_style = ParagraphStyle("Meta", fontName="Sarabun", fontSize=9, textColor=colors.grey, spaceAfter=10)
+    owner_style = ParagraphStyle("Owner", fontName="Sarabun-Bold", fontSize=12, textColor=colors.HexColor("#1E3A8A"), spaceBefore=12, spaceAfter=6)
+    cell_style = ParagraphStyle("Cell", fontName="Sarabun", fontSize=8, leading=10)
+    header_cell_style = ParagraphStyle("HeaderCell", fontName="Sarabun-Bold", fontSize=8.5, textColor=colors.white, leading=10)
+
+    story = [
+        Paragraph("รายงานการเยี่ยมลูกค้า", title_style),
+        Paragraph(f"อัปเดตล่าสุด {generated_at}", meta_style),
+    ]
+
+    col_widths = [20 * mm, 55 * mm, 16 * mm, 38 * mm, 60 * mm, 28 * mm, 24 * mm]
+
+    for owner, rows in groups:
+        story.append(Paragraph(f"Owner: {owner} &nbsp;&nbsp;({len(rows)} ครั้ง)", owner_style))
+
+        table_rows = [[Paragraph(label, header_cell_style) for _, label, _ in REPORT_COLUMNS]]
+        for v in rows:
+            table_rows.append([
+                Paragraph(str(v.get(key, "")), cell_style) for key, _, _ in REPORT_COLUMNS
+            ])
+
+        table = Table(table_rows, colWidths=col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(table)
+
+    doc.build(story)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="visit_report.pdf",
+        mimetype="application/pdf",
+    )
 
 
 if __name__ == "__main__":
