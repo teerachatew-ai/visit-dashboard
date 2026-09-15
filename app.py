@@ -520,12 +520,10 @@ def build_visit_report_groups():
 
 REPORT_COLUMNS = [
     ("date", "วันที่", 12),
-    ("company_name", "บริษัท", 34),
+    ("company_name", "บริษัท", 40),
     ("ie", "พื้นที่", 10),
-    ("topic", "หัวข้อ", 22),
-    ("details", "รายละเอียด", 34),
-    ("contact", "ผู้ติดต่อ", 16),
-    ("staff", "ผู้บันทึก", 14),
+    ("topic", "หัวข้อ", 28),
+    ("staff", "ผู้บันทึก", 16),
 ]
 
 
@@ -609,7 +607,7 @@ def api_report_pdf():
         Paragraph(f"อัปเดตล่าสุด {generated_at}", meta_style),
     ]
 
-    col_widths = [20 * mm, 55 * mm, 16 * mm, 38 * mm, 60 * mm, 28 * mm, 24 * mm]
+    col_widths = [22 * mm, 95 * mm, 20 * mm, 95 * mm, 30 * mm]
 
     for owner, rows in groups:
         story.append(Paragraph(f"Owner: {owner} &nbsp;&nbsp;({len(rows)} ครั้ง)", owner_style))
