@@ -154,9 +154,10 @@ function renderTarget() {
         <td>${progressCellHtml(c)}</td>
         <td>${c.visits_needed > 0 ? c.visits_needed + " ครั้ง" : "-"}</td>
         <td>${c.last_visit_date || "ยังไม่เคย"}</td>
+        <td>${c.last_visit_topic || "-"}</td>
         <td>${STATUS_LABEL[c.status] ? `<span class="badge badge-${c.status}">${STATUS_LABEL[c.status]}</span>` : ""}</td>
       </tr>`).join("")
-    : `<tr><td colspan="7"><div class="search-empty">ไม่พบลูกค้าตามเงื่อนไขที่เลือก</div></td></tr>`;
+    : `<tr><td colspan="8"><div class="search-empty">ไม่พบลูกค้าตามเงื่อนไขที่เลือก</div></td></tr>`;
   bindClickableRows("tg-tbody");
 
   document.getElementById("offTargetCount").textContent = DATA.off_target_customers.length;
@@ -168,8 +169,8 @@ function renderTarget() {
 
 function exportTargetCSV() {
   const list = filteredTargetCustomers();
-  const header = ["บริษัท", "พื้นที่", "Owner", "Target/ปี", "เยี่ยมแล้ว", "ขาดอีก", "ติดต่อล่าสุด", "สถานะ"];
-  const rows = list.map((c) => [c.company_name, c.ie, c.sl_real, c.target_per_year, c.visits_this_year, c.visits_needed, c.last_visit_date || "", STATUS_LABEL[c.status]]);
+  const header = ["บริษัท", "พื้นที่", "Owner", "Target/ปี", "เยี่ยมแล้ว", "ขาดอีก", "ติดต่อล่าสุด", "หัวข้อล่าสุด", "สถานะ"];
+  const rows = list.map((c) => [c.company_name, c.ie, c.sl_real, c.target_per_year, c.visits_this_year, c.visits_needed, c.last_visit_date || "", c.last_visit_topic || "", STATUS_LABEL[c.status]]);
   const csv = [header, ...rows].map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a");

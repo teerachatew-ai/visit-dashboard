@@ -242,6 +242,14 @@ def build_dataset():
     touch_count_total = touch.groupby("CustomerID").size()
     last_touch = touch.groupby("CustomerID")["Date"].max()
 
+    # Topic of each customer's most recent VISIT specifically (document
+    # receipts don't carry a topic), for display alongside "ติดต่อล่าสุด".
+    last_visit_topic = (
+        visit.sort_values("Date", ascending=False)
+        .drop_duplicates(subset="CustomerID", keep="first")
+        .set_index("CustomerID")["Topic"]
+    )
+
     elapsed_months = year_fraction * 12
     owner_overrides = load_owner_overrides()
 
@@ -296,6 +304,7 @@ def build_dataset():
             "visits_total": v_total,
             "visits_needed": int(needed),
             "last_visit_date": lv.strftime("%Y-%m-%d") if pd.notna(lv) else None,
+            "last_visit_topic": last_visit_topic.get(cid, "") or "",
             "days_since_last_visit": int(days_since) if days_since is not None else None,
             "next_due_date": next_due.strftime("%Y-%m-%d") if next_due is not None and pd.notna(next_due) else None,
             "status": status,
