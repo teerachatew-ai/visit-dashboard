@@ -498,15 +498,18 @@ def api_owners_reset():
 
 
 def build_visit_report_groups():
-    """Visit records grouped by each customer's CURRENT owner (not the
-    staff name logged on the visit itself, which drifts as ownership
-    rotates - see the ทีม tab for the same convention)."""
+    """Current-year visit records grouped by each customer's CURRENT owner
+    (not the staff name logged on the visit itself, which drifts as
+    ownership rotates - see the ทีม tab for the same convention)."""
     data = get_dataset()
+    year = str(datetime.now().year)
     owner_map = {c["customer_id"]: c["sl_real"] for c in data["customers"]}
     UNASSIGNED = "ไม่มี Owner (นอกแผนเป้าหมาย)"
 
     by_owner = {}
     for v in data["visits"]:
+        if not v["date"].startswith(year):
+            continue
         owner = owner_map.get(v["customer_id"], UNASSIGNED)
         by_owner.setdefault(owner, []).append(v)
 
@@ -515,7 +518,99 @@ def build_visit_report_groups():
     for owner in owners_sorted:
         rows = sorted(by_owner[owner], key=lambda v: v["date"], reverse=True)
         groups.append((owner, rows))
-    return groups, data["generated_at"]
+    return groups, data["generated_at"], year
+
+
+def build_audit_summary():
+    """Figures for the audit summary page: scope, criteria, per-owner
+    results, and the exception list (customers currently overdue)."""
+    data = get_dataset()
+    year = str(datetime.now().year)
+    customers = data["customers"]
+    owner_map = {c["customer_id"]: c["sl_real"] for c in customers}
+
+    # Scope every count to in-plan customers so the per-owner rows add up to
+    # the org total - an auditor will check that the columns reconcile.
+    # Contacts with off-plan customers are reported separately as a note.
+    all_visits_year = [v for v in data["visits"] if v["date"].startswith(year)]
+    all_docs_year = [d for d in data["documents"] if d["date"].startswith(year)]
+    visits_year = [v for v in all_visits_year if v["customer_id"] in owner_map]
+    docs_year = [d for d in all_docs_year if d["customer_id"] in owner_map]
+    off_plan_touchpoints = (len(all_visits_year) - len(visits_year)) + (len(all_docs_year) - len(docs_year))
+
+    # Touchpoints are credited to the customer's current owner, matching how
+    # the dashboard counts them everywhere else.
+    touch_by_owner = {}
+    for rec in visits_year + docs_year:
+        owner = owner_map.get(rec["customer_id"])
+        if owner:
+            touch_by_owner[owner] = touch_by_owner.get(owner, 0) + 1
+
+    per_owner = {}
+    for c in customers:
+        stat = per_owner.setdefault(
+            c["sl_real"], {"total": 0, "done": 0, "in_progress": 0, "overdue": 0}
+        )
+        stat["total"] += 1
+        stat[c["status"]] += 1
+
+    rows = []
+    for owner in sorted(per_owner):
+        s = per_owner[owner]
+        rows.append({
+            "owner": owner,
+            "customers": s["total"],
+            "touchpoints": touch_by_owner.get(owner, 0),
+            "done": s["done"],
+            "in_progress": s["in_progress"],
+            "overdue": s["overdue"],
+            "pct_done": (s["done"] / s["total"] * 100) if s["total"] else 0,
+        })
+
+    totals = {
+        "customers": len(customers),
+        "visits": len(visits_year),
+        "docs": len(docs_year),
+        "touchpoints": len(visits_year) + len(docs_year),
+        "done": sum(1 for c in customers if c["status"] == "done"),
+        "in_progress": sum(1 for c in customers if c["status"] == "in_progress"),
+        "overdue": sum(1 for c in customers if c["status"] == "overdue"),
+    }
+    totals["pct_done"] = (totals["done"] / totals["customers"] * 100) if totals["customers"] else 0
+
+    exceptions = sorted(
+        (c for c in customers if c["status"] == "overdue"),
+        key=lambda c: (c["sl_real"], -(c["days_since_last_visit"] or 0)),
+    )
+
+    return {
+        "year": year,
+        "generated_at": data["generated_at"],
+        "rows": rows,
+        "totals": totals,
+        "exceptions": exceptions,
+        "off_plan_touchpoints": off_plan_touchpoints,
+    }
+
+
+def audit_criteria_lines(summary):
+    """Assessment criteria spelled out for the auditor, so the numbers on
+    the summary page can be traced back to a stated rule."""
+    return [
+        f"ขอบเขตการตรวจ: ลูกค้าในแผนเป้าหมาย {summary['totals']['customers']:,} ราย "
+        f"รอบปี {summary['year']} (1 ม.ค. {summary['year']} – ปัจจุบัน)",
+        "เกณฑ์เป้าหมาย: ลูกค้าแผน “ทุกๆ 4 เดือน” = 3 ครั้ง/ปี และแผน “ทุกๆ 6 เดือน” = 2 ครั้ง/ปี",
+        "การนับจำนวนครั้ง: นับทั้งการเข้าเยี่ยม (Visit Record) และการรับเอกสาร (Document Receive) "
+        "เป็นการติดต่อลูกค้า 1 ครั้ง",
+        "เกณฑ์ “เกินกำหนด”: แบ่งปีออกเป็นช่วงตามรอบเป้าหมาย (ทุก 4 หรือ 6 เดือน) "
+        "หากผ่านจุดตรวจของรอบแล้วยังติดต่อไม่ครบจำนวนที่ควรได้ ถือว่าเกินกำหนด",
+        "ผู้ดูแล (Owner): อ้างอิงผู้ดูแลที่รับผิดชอบ ณ วันที่ออกรายงาน "
+        "(กรณีมีการโอนย้ายระหว่างปี ประวัติการเยี่ยมเดิมจะถูกนับให้ผู้ดูแลปัจจุบัน)",
+        f"แหล่งข้อมูล: Google Sheet – ชีต Visit Record และ Document Receive "
+        f"ดึงข้อมูลสด ณ {summary['generated_at']}",
+        f"ข้อมูลที่ไม่นับรวม: การติดต่อลูกค้านอกแผนเป้าหมาย {summary['off_plan_touchpoints']:,} ครั้ง "
+        "(ไม่นำมาประเมินผล เนื่องจากอยู่นอกขอบเขตการตรวจ)",
+    ]
 
 
 REPORT_COLUMNS = [
@@ -527,13 +622,126 @@ REPORT_COLUMNS = [
 ]
 
 
+SUMMARY_HEADERS = [
+    ("owner", "ผู้ดูแล (Owner)", 22),
+    ("customers", "ลูกค้าที่รับผิดชอบ", 18),
+    ("touchpoints", "จำนวนติดต่อปีนี้", 18),
+    ("done", "ครบตามเป้าหมาย", 18),
+    ("in_progress", "อยู่ระหว่างดำเนินการ", 20),
+    ("overdue", "เกินกำหนด", 14),
+    ("pct_done", "% ครบเป้าหมาย", 16),
+]
+
+
+def _write_audit_summary_sheet(ws, summary):
+    title_font = Font(bold=True, size=14)
+    section_font = Font(bold=True, size=11, color="1E3A8A")
+    header_fill = PatternFill("solid", fgColor="2563EB")
+    header_font = Font(bold=True, color="FFFFFF")
+    total_fill = PatternFill("solid", fgColor="EAF0FE")
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    for i, (_, _, width) in enumerate(SUMMARY_HEADERS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    ncols = len(SUMMARY_HEADERS)
+
+    def section(row, text):
+        ws.cell(row=row, column=1, value=text).font = section_font
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+        return row + 1
+
+    ws.cell(row=1, column=1, value=f"รายงานสรุปการเข้าเยี่ยมลูกค้า ประจำปี {summary['year']}").font = title_font
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    ws.cell(row=2, column=1, value="เอกสารประกอบการตรวจสอบ (Audit) – การปฏิบัติตามแผนการเข้าเยี่ยมลูกค้า").font = Font(size=10, color="6B7280")
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
+
+    r = section(4, "1. ขอบเขตและเกณฑ์การตรวจสอบ")
+    for line in audit_criteria_lines(summary):
+        ws.cell(row=r, column=1, value="•  " + line).alignment = wrap
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+        ws.row_dimensions[r].height = 28
+        r += 1
+
+    r = section(r + 1, "2. สรุปผลรวมทั้งองค์กร")
+    t = summary["totals"]
+    kpis = [
+        ("ลูกค้าในแผนทั้งหมด", f"{t['customers']:,} ราย"),
+        ("จำนวนการติดต่อปีนี้", f"{t['touchpoints']:,} ครั้ง (เยี่ยม {t['visits']:,} / เอกสาร {t['docs']:,})"),
+        ("ครบตามเป้าหมายแล้ว", f"{t['done']:,} ราย ({t['pct_done']:.1f}%)"),
+        ("อยู่ระหว่างดำเนินการ", f"{t['in_progress']:,} ราย"),
+        ("เกินกำหนด (ข้อยกเว้น)", f"{t['overdue']:,} ราย"),
+    ]
+    for label, value in kpis:
+        ws.cell(row=r, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=r, column=2, value=value)
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=ncols)
+        r += 1
+
+    r = section(r + 1, "3. ผลการปฏิบัติงานรายผู้ดูแล (Owner)")
+    for c, (_, label, _) in enumerate(SUMMARY_HEADERS, start=1):
+        cell = ws.cell(row=r, column=c, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = wrap
+    r += 1
+    for row in summary["rows"]:
+        for c, (key, _, _) in enumerate(SUMMARY_HEADERS, start=1):
+            value = f"{row[key]:.1f}%" if key == "pct_done" else row[key]
+            ws.cell(row=r, column=c, value=value)
+        r += 1
+    for c, (key, _, _) in enumerate(SUMMARY_HEADERS, start=1):
+        if key == "owner":
+            value = "รวมทั้งหมด"
+        elif key == "pct_done":
+            value = f"{t['pct_done']:.1f}%"
+        else:
+            value = t[key]
+        cell = ws.cell(row=r, column=c, value=value)
+        cell.font = Font(bold=True)
+        cell.fill = total_fill
+    r += 2
+
+    r = section(r, f"4. รายการที่ไม่เป็นไปตามเกณฑ์ – เกินกำหนดเข้าเยี่ยม ({len(summary['exceptions'])} ราย)")
+    if summary["exceptions"]:
+        exc_headers = ["บริษัท", "พื้นที่", "ผู้ดูแล", "เป้าหมาย/ปี", "ติดต่อแล้ว", "ติดต่อล่าสุด", "ห่างมาแล้ว (วัน)"]
+        for c, label in enumerate(exc_headers, start=1):
+            cell = ws.cell(row=r, column=c, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = wrap
+        r += 1
+        for c_ in summary["exceptions"]:
+            values = [
+                c_["company_name"], c_["ie"], c_["sl_real"], c_["target_per_year"],
+                c_["visits_this_year"], c_["last_visit_date"] or "ยังไม่เคย",
+                c_["days_since_last_visit"] if c_["days_since_last_visit"] is not None else "-",
+            ]
+            for c, value in enumerate(values, start=1):
+                ws.cell(row=r, column=c, value=value).alignment = wrap
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="ไม่พบลูกค้าที่เกินกำหนดเข้าเยี่ยม ณ วันที่ออกรายงาน")
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+        r += 1
+
+    r = section(r + 1, "5. ผู้จัดทำและผู้ตรวจสอบ")
+    ws.cell(row=r + 1, column=1, value="ผู้จัดทำรายงาน: ____________________")
+    ws.cell(row=r + 1, column=4, value="ผู้ตรวจสอบ: ____________________")
+    ws.cell(row=r + 2, column=1, value="วันที่: ____________________")
+    ws.cell(row=r + 2, column=4, value="วันที่: ____________________")
+
+
 @app.route("/api/report/excel")
 def api_report_excel():
-    groups, generated_at = build_visit_report_groups()
+    groups, generated_at, year = build_visit_report_groups()
+    summary = build_audit_summary()
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "รายงานการเยี่ยมลูกค้า"
+    ws_summary = wb.active
+    ws_summary.title = "สรุปสำหรับ Audit"
+    _write_audit_summary_sheet(ws_summary, summary)
+
+    ws = wb.create_sheet("รายละเอียดการเยี่ยม")
     ws.sheet_properties.outlinePr.summaryBelow = False  # group header stays above its collapsed rows
 
     header_fill = PatternFill("solid", fgColor="2563EB")
@@ -545,7 +753,7 @@ def api_report_excel():
     for i, (_, label, width) in enumerate(REPORT_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
 
-    ws.cell(row=1, column=1, value=f"รายงานการเยี่ยมลูกค้า — อัปเดตล่าสุด {generated_at}").font = Font(bold=True, size=13)
+    ws.cell(row=1, column=1, value=f"รายละเอียดการเข้าเยี่ยมลูกค้า ปี {year} — อัปเดตล่าสุด {generated_at}").font = Font(bold=True, size=13)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(REPORT_COLUMNS))
     row_num = 3
 
@@ -581,14 +789,119 @@ def api_report_excel():
     return send_file(
         buf,
         as_attachment=True,
-        download_name="visit_report.xlsx",
+        download_name=f"visit_report_{year}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
+TABLE_STYLE_BASE = [
+    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
+    ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
+    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+]
+
+
+def _audit_summary_story(summary, styles):
+    """First page of the PDF: the audit-facing summary."""
+    title_style, meta_style, section_style, cell_style, header_cell_style, body_style = styles
+    t = summary["totals"]
+    story = [
+        Paragraph(f"รายงานสรุปการเข้าเยี่ยมลูกค้า ประจำปี {summary['year']}", title_style),
+        Paragraph(
+            "เอกสารประกอบการตรวจสอบ (Audit) – การปฏิบัติตามแผนการเข้าเยี่ยมลูกค้า"
+            f" &nbsp;|&nbsp; ข้อมูล ณ {summary['generated_at']}",
+            meta_style,
+        ),
+        Paragraph("1. ขอบเขตและเกณฑ์การตรวจสอบ", section_style),
+    ]
+    for line in audit_criteria_lines(summary):
+        story.append(Paragraph(f"•&nbsp; {line}", body_style))
+
+    story.append(Paragraph("2. สรุปผลรวมทั้งองค์กร", section_style))
+    kpi_rows = [[
+        Paragraph("ลูกค้าในแผนทั้งหมด", header_cell_style),
+        Paragraph("การติดต่อปีนี้", header_cell_style),
+        Paragraph("ครบตามเป้าหมาย", header_cell_style),
+        Paragraph("อยู่ระหว่างดำเนินการ", header_cell_style),
+        Paragraph("เกินกำหนด (ข้อยกเว้น)", header_cell_style),
+    ], [
+        Paragraph(f"{t['customers']:,} ราย", cell_style),
+        Paragraph(f"{t['touchpoints']:,} ครั้ง<br/>(เยี่ยม {t['visits']:,} / เอกสาร {t['docs']:,})", cell_style),
+        Paragraph(f"{t['done']:,} ราย ({t['pct_done']:.1f}%)", cell_style),
+        Paragraph(f"{t['in_progress']:,} ราย", cell_style),
+        Paragraph(f"{t['overdue']:,} ราย", cell_style),
+    ]]
+    kpi_table = Table(kpi_rows, colWidths=[52 * mm] * 5)
+    kpi_table.setStyle(TableStyle(TABLE_STYLE_BASE))
+    story.append(kpi_table)
+
+    story.append(Paragraph("3. ผลการปฏิบัติงานรายผู้ดูแล (Owner)", section_style))
+    owner_rows = [[Paragraph(label, header_cell_style) for _, label, _ in SUMMARY_HEADERS]]
+    for row in summary["rows"]:
+        owner_rows.append([
+            Paragraph(f"{row[key]:.1f}%" if key == "pct_done" else str(row[key]), cell_style)
+            for key, _, _ in SUMMARY_HEADERS
+        ])
+    owner_rows.append([
+        Paragraph(f"<b>{'รวมทั้งหมด' if key == 'owner' else (f'{t[key]:.1f}%' if key == 'pct_done' else f'{t[key]:,}')}</b>", cell_style)
+        for key, _, _ in SUMMARY_HEADERS
+    ])
+    owner_table = Table(owner_rows, colWidths=[44 * mm, 33 * mm, 33 * mm, 33 * mm, 38 * mm, 28 * mm, 33 * mm], repeatRows=1)
+    owner_table.setStyle(TableStyle(TABLE_STYLE_BASE + [
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EAF0FE")),
+    ]))
+    story.append(owner_table)
+
+    story.append(Paragraph(
+        f"4. รายการที่ไม่เป็นไปตามเกณฑ์ – เกินกำหนดเข้าเยี่ยม ({len(summary['exceptions'])} ราย)",
+        section_style,
+    ))
+    if summary["exceptions"]:
+        exc_headers = ["บริษัท", "พื้นที่", "ผู้ดูแล", "เป้าหมาย/ปี", "ติดต่อแล้ว", "ติดต่อล่าสุด", "ห่างมาแล้ว (วัน)"]
+        exc_rows = [[Paragraph(h, header_cell_style) for h in exc_headers]]
+        for c in summary["exceptions"]:
+            exc_rows.append([
+                Paragraph(c["company_name"], cell_style),
+                Paragraph(c["ie"], cell_style),
+                Paragraph(c["sl_real"], cell_style),
+                Paragraph(str(c["target_per_year"]), cell_style),
+                Paragraph(str(c["visits_this_year"]), cell_style),
+                Paragraph(c["last_visit_date"] or "ยังไม่เคย", cell_style),
+                Paragraph(str(c["days_since_last_visit"] if c["days_since_last_visit"] is not None else "-"), cell_style),
+            ])
+        exc_table = Table(exc_rows, colWidths=[85 * mm, 20 * mm, 30 * mm, 25 * mm, 25 * mm, 30 * mm, 27 * mm], repeatRows=1)
+        exc_table.setStyle(TableStyle(TABLE_STYLE_BASE))
+        story.append(exc_table)
+    else:
+        story.append(Paragraph("ไม่พบลูกค้าที่เกินกำหนดเข้าเยี่ยม ณ วันที่ออกรายงาน", body_style))
+
+    story.append(Paragraph("5. ผู้จัดทำและผู้ตรวจสอบ", section_style))
+    sign_rows = [[
+        Paragraph("ผู้จัดทำรายงาน<br/><br/>ลงชื่อ ______________________<br/>วันที่ ______________________", cell_style),
+        Paragraph("ผู้ตรวจสอบ<br/><br/>ลงชื่อ ______________________<br/>วันที่ ______________________", cell_style),
+    ]]
+    sign_table = Table(sign_rows, colWidths=[90 * mm, 90 * mm])
+    sign_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(sign_table)
+    story.append(PageBreak())
+    return story
+
+
 @app.route("/api/report/pdf")
 def api_report_pdf():
-    groups, generated_at = build_visit_report_groups()
+    groups, generated_at, year = build_visit_report_groups()
+    summary = build_audit_summary()
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -599,11 +912,17 @@ def api_report_pdf():
     title_style = ParagraphStyle("Title", fontName="Sarabun-Bold", fontSize=16, spaceAfter=4)
     meta_style = ParagraphStyle("Meta", fontName="Sarabun", fontSize=9, textColor=colors.grey, spaceAfter=10)
     owner_style = ParagraphStyle("Owner", fontName="Sarabun-Bold", fontSize=12, textColor=colors.HexColor("#1E3A8A"), spaceBefore=12, spaceAfter=6)
+    section_style = ParagraphStyle("Section", fontName="Sarabun-Bold", fontSize=11, textColor=colors.HexColor("#1E3A8A"), spaceBefore=12, spaceAfter=6)
+    body_style = ParagraphStyle("Body", fontName="Sarabun", fontSize=9, leading=13, spaceAfter=2)
     cell_style = ParagraphStyle("Cell", fontName="Sarabun", fontSize=8, leading=10)
     header_cell_style = ParagraphStyle("HeaderCell", fontName="Sarabun-Bold", fontSize=8.5, textColor=colors.white, leading=10)
 
-    story = [
-        Paragraph("รายงานการเยี่ยมลูกค้า", title_style),
+    story = _audit_summary_story(
+        summary,
+        (title_style, meta_style, section_style, cell_style, header_cell_style, body_style),
+    )
+    story += [
+        Paragraph(f"รายละเอียดการเข้าเยี่ยมลูกค้า ปี {year}", title_style),
         Paragraph(f"อัปเดตล่าสุด {generated_at}", meta_style),
     ]
 
@@ -619,16 +938,7 @@ def api_report_pdf():
             ])
 
         table = Table(table_rows, colWidths=col_widths, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
+        table.setStyle(TableStyle(TABLE_STYLE_BASE))
         story.append(table)
 
     doc.build(story)
@@ -636,7 +946,7 @@ def api_report_pdf():
     return send_file(
         buf,
         as_attachment=True,
-        download_name="visit_report.pdf",
+        download_name=f"visit_report_{year}.pdf",
         mimetype="application/pdf",
     )
 
